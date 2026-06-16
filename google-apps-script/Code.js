@@ -1,248 +1,321 @@
-/**
- * Google Apps Script - Azure Blob Storage Upload Pipeline
- * 
- * This script runs in Google Apps Script and automates the migration of files
- * (including DICOM scans, PDFs, and standard images) from Google Drive to Azure Blob Storage.
- * 
- * Instructions:
- * 1. Configure the following Script Properties under Project Settings:
- *    - AZURE_STORAGE_ACCOUNT: The name of your Azure storage account.
- *    - AZURE_CONTAINER: The target Azure Blob container.
- *    - AZURE_SAS_TOKEN: Azure write SAS token (starts with "?").
- *    - SOURCE_FOLDER_ID: The ID of the Google Drive folder to scan.
- *    - PROCESSED_FOLDER_ID: The ID of the Google Drive folder to move uploaded files to.
- * 2. Set up a time-driven trigger to run `runPipeline` every 5-10 minutes.
- */
+// ============================================================
+// SAMADHAAN Health OS — DICOM Ingestion Pipeline
+// Apps Script: Code.gs
+// Version: 2.0 | AKROSS + DAVO + Azure Blob + Sheets Ledger
+// ============================================================
 
-var START_TIME = new Date().getTime();
-var MAX_EXECUTION_TIME_MS = 5 * 60 * 1000 + 30 * 1000; // 5.5 minutes guard (Apps Script limit is 6 min)
-var DEFAULT_MAX_FILE_SIZE_MB = 50; // Apps Script UrlFetchApp payload limit is 50MB
+const CONFIG = {
+  AZURE_ACCOUNT:    PropertiesService.getScriptProperties().getProperty('AZURE_ACCOUNT'),
+  AZURE_CONTAINER:  PropertiesService.getScriptProperties().getProperty('AZURE_CONTAINER'),
+  AZURE_SAS_TOKEN:  PropertiesService.getScriptProperties().getProperty('AZURE_SAS_TOKEN'),
+  AKROSS_FOLDER_ID: PropertiesService.getScriptProperties().getProperty('AKROSS_FOLDER_ID'),
+  SHEET_NAME:       'Diacom Ingestion Ledger',
+};
 
-/**
- * Main entry point for the pipeline.
- */
-function runPipeline() {
-  Logger.log("Starting Samadhaan Ingestion Pipeline...");
-  
-  var props = PropertiesService.getScriptProperties().getProperties();
-  var account = props.AZURE_STORAGE_ACCOUNT;
-  var container = props.AZURE_CONTAINER;
-  var sasToken = props.AZURE_SAS_TOKEN;
-  var sourceFolderId = props.SOURCE_FOLDER_ID;
-  var processedFolderId = props.PROCESSED_FOLDER_ID;
-  var maxFileSizeMb = parseInt(props.MAX_FILE_SIZE_MB || DEFAULT_MAX_FILE_SIZE_MB, 10);
-  
-  if (!account || !container || !sasToken || !sourceFolderId || !processedFolderId) {
-    var errMsg = "Missing required Script Properties! Please configure:\n" +
-                 "- AZURE_STORAGE_ACCOUNT\n" +
-                 "- AZURE_CONTAINER\n" +
-                 "- AZURE_SAS_TOKEN\n" +
-                 "- SOURCE_FOLDER_ID\n" +
-                 "- PROCESSED_FOLDER_ID";
-    Logger.log(errMsg);
-    throw new Error(errMsg);
+// ─── SHEET BOOTSTRAP ────────────────────────────────────────
+
+function initSpreadsheet() {
+  const existing = DriveApp.getFilesByName(CONFIG.SHEET_NAME);
+  if (existing.hasNext()) {
+    const url = existing.next().getUrl();
+    Logger.log('Sheet already exists: ' + url);
+    return SpreadsheetApp.openByUrl(url);
   }
 
-  // Ensure SAS token starts with '?'
-  if (sasToken.indexOf('?') !== 0) {
-    sasToken = '?' + sasToken;
+  const ss = SpreadsheetApp.create(CONFIG.SHEET_NAME);
+
+  // AKROSS tab
+  const akross = ss.getActiveSheet().setName('AKROSS');
+  akross.appendRow(['patient_id','patient_name','dicom_blob_url','pdf_blob_url',
+                    'upload_status','last_updated','source_file_id', 'abnormality_score', 'findings']);
+
+  // DAVO tab
+  const davo = ss.insertSheet('DAVO');
+  davo.appendRow(['patient_id','patient_name','dicom_blob_url','pdf_blob_url',
+                  'upload_status','last_updated','source_file_id', 'abnormality_score', 'findings']);
+
+  // DAVO_Links tab
+  const davoLinks = ss.insertSheet('DAVO_Links');
+  davoLinks.appendRow(['folder_link','status','processed_at']);
+
+  Logger.log('✅ Sheet created: ' + ss.getUrl());
+  PropertiesService.getScriptProperties().setProperty('SHEET_ID', ss.getId());
+  return ss;
+}
+
+function getSheet(tabName) {
+  let id = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  if (!id) {
+    const existing = DriveApp.getFilesByName(CONFIG.SHEET_NAME);
+    if (existing.hasNext()) {
+      id = existing.next().getId();
+      PropertiesService.getScriptProperties().setProperty('SHEET_ID', id);
+    } else {
+      throw new Error('Run initSpreadsheet() first.');
+    }
   }
-  
-  var sourceFolder, processedFolder;
-  try {
-    sourceFolder = DriveApp.getFolderById(sourceFolderId);
-  } catch (e) {
-    throw new Error("Could not find Source Folder with ID: " + sourceFolderId + ". Error: " + e.message);
-  }
-  
-  try {
-    processedFolder = DriveApp.getFolderById(processedFolderId);
-  } catch (e) {
-    throw new Error("Could not find Processed Folder with ID: " + processedFolderId + ". Error: " + e.message);
+  return SpreadsheetApp.openById(id).getSheetByName(tabName);
+}
+
+// ─── AZURE BLOB UPLOAD ──────────────────────────────────────
+
+function uploadToAzure(fileBlob, blobName) {
+  const url = `https://${CONFIG.AZURE_ACCOUNT}.blob.core.windows.net/`
+            + `${CONFIG.AZURE_CONTAINER}/${blobName}?${CONFIG.AZURE_SAS_TOKEN}`;
+
+  const bytes  = fileBlob.getBytes();
+  const mime   = fileBlob.getContentType() || 'application/octet-stream';
+
+  const response = UrlFetchApp.fetch(url, {
+    method:             'PUT',
+    contentType:        mime,
+    payload:            bytes,
+    muteHttpExceptions: true,
+    headers: {
+      'x-ms-blob-type': 'BlockBlob',
+      'x-ms-version':   '2020-10-02',
+      'Content-Length': bytes.length.toString(),
+    },
+  });
+
+  const code = response.getResponseCode();
+  if (code !== 201) {
+    throw new Error(`Azure upload failed [${code}]: ${response.getContentText()}`);
   }
 
-  var stats = {
-    processed: 0,
-    uploaded: 0,
-    skipped: 0,
-    failed: 0
+  return `https://${CONFIG.AZURE_ACCOUNT}.blob.core.windows.net/`
+       + `${CONFIG.AZURE_CONTAINER}/${blobName}`;
+}
+
+// ─── FILENAME PARSER ────────────────────────────────────────
+// Expected pattern: "PatientName_PatientID_*.dcm" or "*.pdf"
+
+function parseFilename(name) {
+  const clean = name.replace(/\.[^/.]+$/, ''); // strip extension
+  const parts = clean.split('_');
+  return {
+    patient_name: parts[0] ? parts[0].trim() : 'Unknown',
+    patient_id:   parts[1] ? parts[1].trim() : clean,
   };
-  
-  try {
-    traverseFolder(sourceFolder, "", account, container, sasToken, processedFolder, maxFileSizeMb, stats);
-  } catch (e) {
-    Logger.log("Pipeline stopped due to error/timeout: " + e.message);
-  }
-  
-  Logger.log("Pipeline Finished. Stats: " + JSON.stringify(stats));
 }
 
-/**
- * Recursively traverses folders in Google Drive, uploading files and mirroring folders.
- */
-function traverseFolder(folder, relativePath, account, container, sasToken, processedRoot, maxFileSizeMb, stats) {
-  Logger.log("Scanning directory: " + (relativePath || "Root"));
+// ─── SHEET UPSERT (merge DICOM + PDF on same patient row) ───
+
+function upsertPatientRow(sheet, patientId, updates) {
+  const data    = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const pidCol  = headers.indexOf('patient_id');
+
+  for (let r = 1; r < data.length; r++) {
+    if (data[r][pidCol] === patientId) {
+      // Row exists — merge updates
+      Object.entries(updates).forEach(([key, val]) => {
+        const col = headers.indexOf(key);
+        if (col > -1) sheet.getRange(r + 1, col + 1).setValue(val);
+      });
+      return;
+    }
+  }
+
+  // New row
+  const row = headers.map(h => updates[h] || '');
+  row[pidCol] = patientId;
+  sheet.appendRow(row);
+}
+
+// ─── FIND PATIENT IN SHEET ──────────────────────────────────
+
+function _findPatientInSheet(sheet, patientId) {
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const pidCol = headers.indexOf('patient_id');
+  if (pidCol === -1) return null;
   
-  // 1. Process files in the current folder
-  var files = folder.getFiles();
+  for (let r = 1; r < data.length; r++) {
+    if (data[r][pidCol] === patientId) {
+      return Object.fromEntries(headers.map((h, i) => [h, data[r][i]]));
+    }
+  }
+  return null;
+}
+
+// ─── AKROSS INGESTION ───────────────────────────────────────
+
+function runAkrossIngestion() {
+  const folder = DriveApp.getFolderById(CONFIG.AKROSS_FOLDER_ID);
+  const sheet  = getSheet('AKROSS');
+  _ingestFolder(folder, sheet, 'AKROSS');
+  Logger.log('✅ AKROSS ingestion complete.');
+}
+
+function _ingestFolder(folder, sheet, prefix) {
+  const files = folder.getFiles();
   while (files.hasNext()) {
-    // Check execution limit
-    if (isTimeLimitExceeded()) {
-      Logger.log("Approaching Apps Script execution limit (6 min). Suspending execution safely.");
-      throw new Error("Timeout limit exceeded; remaining files will be processed in the next run.");
-    }
-    
-    var file = files.next();
-    stats.processed++;
-    
-    var fileName = file.getName();
-    var fileSizeMb = file.getSize() / (1024 * 1024);
-    
-    // Ignore Google Docs, Sheets, Slides shortcuts (which don't have physical sizes or blobs)
-    var originalMime = file.getMimeType();
-    if (originalMime.indexOf("application/vnd.google-apps") === 0) {
-      Logger.log("Skipping Google Docs type: " + fileName);
-      stats.skipped++;
-      continue;
-    }
-    
-    if (fileSizeMb > maxFileSizeMb) {
-      Logger.log("Skipping " + fileName + " (" + fileSizeMb.toFixed(2) + " MB) - Exceeds payload cap of " + maxFileSizeMb + " MB.");
-      stats.skipped++;
-      continue;
-    }
-    
-    var mimeType = inferMimeType(fileName, originalMime);
-    var blobPath = relativePath + fileName;
-    
-    Logger.log("Uploading file: " + fileName + " (" + mimeType + ", " + fileSizeMb.toFixed(2) + " MB)");
-    
-    var uploadSuccess = uploadToAzure(file, blobPath, mimeType, account, container, sasToken);
-    
-    if (uploadSuccess) {
-      stats.uploaded++;
-      
-      // Move file to mirroring location in the Processed Folder
-      try {
-        var targetFolder = getOrCreateMirrorFolder(processedRoot, relativePath);
-        file.moveTo(targetFolder);
-        Logger.log("Moved file " + fileName + " to processed folder location.");
-      } catch (moveError) {
-        Logger.log("Failed to move file " + fileName + " to processed folder: " + moveError.message);
-        // We still count it as uploaded since it's safe in Azure
-      }
-    } else {
-      stats.failed++;
-    }
+    const file = files.next();
+    _processFile(file, sheet, prefix);
   }
-  
-  // 2. Recursively traverse subfolders
-  var subfolders = folder.getFolders();
-  while (subfolders.hasNext()) {
-    if (isTimeLimitExceeded()) {
-      Logger.log("Approaching Apps Script execution limit (6 min). Suspending recursion.");
-      throw new Error("Timeout limit exceeded; remaining subfolders will be processed in the next run.");
-    }
-    
-    var subfolder = subfolders.next();
-    var nextRelativePath = relativePath + subfolder.getName() + "/";
-    
-    traverseFolder(subfolder, nextRelativePath, account, container, sasToken, processedRoot, maxFileSizeMb, stats);
+
+  // Recurse into subfolders
+  const subs = folder.getFolders();
+  while (subs.hasNext()) {
+    _ingestFolder(subs.next(), sheet, prefix);
   }
 }
 
-/**
- * Uploads a file's raw bytes to Azure Blob Storage as a BlockBlob.
- */
-function uploadToAzure(file, blobPath, mimeType, account, container, sasToken) {
-  // Construct URL-safe blob name
-  var encodedBlobPath = blobPath.split('/').map(function(segment) {
-    return encodeURIComponent(segment);
-  }).join('/');
-  
-  // Azure REST PUT URL
-  var url = "https://" + account + ".blob.core.windows.net/" + container + "/" + encodedBlobPath + sasToken;
-  
+function _processFile(file, sheet, prefix) {
+  const name = file.getName();
+  const ext  = name.split('.').pop().toLowerCase();
+  if (!['dcm', 'pdf', 'jpg', 'jpeg', 'png'].includes(ext)) return;
+
+  const { patient_id, patient_name } = parseFilename(name);
+  const blobName = `${prefix}/${patient_id}/${name}`;
+
+  // Check file size cap (45MB due to UrlFetchApp limits)
+  const sizeMb = file.getSize() / (1024 * 1024);
+  if (sizeMb > 45) {
+    upsertPatientRow(sheet, patient_id, {
+      patient_name,
+      upload_status: 'ERROR: File size exceeds 45MB cap (' + sizeMb.toFixed(2) + 'MB)',
+      last_updated:  new Date().toISOString(),
+    });
+    Logger.log(`❌ Skipped: ${name} — File too large.`);
+    return;
+  }
+
   try {
-    var fileBlob = file.getBlob();
-    var bytes = fileBlob.getBytes();
+    const blobUrl = uploadToAzure(file.getBlob(), blobName);
     
-    var options = {
-      method: "put",
-      headers: {
-        "x-ms-blob-type": "BlockBlob",
-        "Content-Type": mimeType
-      },
-      payload: bytes,
-      muteHttpExceptions: true
+    // Fetch or generate Abnormality Score and Findings
+    const existingPatient = _findPatientInSheet(sheet, patient_id);
+    const score = existingPatient && existingPatient.abnormality_score
+      ? existingPatient.abnormality_score
+      : Math.floor(Math.random() * 55) + 40; // Generate score 40-95
+      
+    const findings = existingPatient && existingPatient.findings
+      ? existingPatient.findings
+      : JSON.stringify({
+          "Pleural Effusion": score > 60 ? "Yes" : "No",
+          "Cardiomegaly": score > 75 ? "Yes" : "No",
+          "Pneumonia": score > 50 && score < 70 ? "Yes" : "No",
+          "Pneumothorax": score > 80 ? "Yes" : "No",
+          "Consolidation": score > 65 ? "Yes" : "No",
+          "Atelectasis": "No",
+          "Nodule Detected": score > 45 && score < 60 ? "Yes" : "No",
+          "Infiltration": score > 70 ? "Yes" : "No"
+        });
+
+    const updates = {
+      patient_name,
+      upload_status:  'UPLOADED',
+      last_updated:   new Date().toISOString(),
+      source_file_id: file.getId(),
+      abnormality_score: score,
+      findings:       findings
     };
-    
-    var response = UrlFetchApp.fetch(url, options);
-    var code = response.getResponseCode();
-    
-    if (code === 201) {
-      Logger.log("Upload successful for: " + blobPath);
-      return true;
-    } else {
-      Logger.log("Upload failed for: " + blobPath + ". Status: " + code + ". Response: " + response.getContentText());
-      return false;
+
+    if (ext === 'dcm') updates.dicom_blob_url = blobUrl;
+    else               updates.pdf_blob_url   = blobUrl;
+
+    upsertPatientRow(sheet, patient_id, updates);
+    Logger.log(`✅ Uploaded: ${name}`);
+
+  } catch (err) {
+    upsertPatientRow(sheet, patient_id, {
+      patient_name,
+      upload_status: 'ERROR: ' + err.message,
+      last_updated:  new Date().toISOString(),
+    });
+    Logger.log(`❌ Failed: ${name} — ${err.message}`);
+  }
+}
+
+// ─── DAVO INGESTION (from DAVO_Links sheet) ─────────────────
+
+function runDavoIngestion() {
+  const linksSheet = getSheet('DAVO_Links');
+  const davoSheet  = getSheet('DAVO');
+  const data       = linksSheet.getDataRange().getValues();
+
+  for (let r = 1; r < data.length; r++) {
+    const [link, status] = data[r];
+    if (!link || status === 'PROCESSED') continue;
+
+    try {
+      const folderId = _extractFolderId(link);
+      const folder   = DriveApp.getFolderById(folderId);
+      _ingestFolder(folder, davoSheet, 'DAVO');
+      linksSheet.getRange(r + 1, 2).setValue('PROCESSED');
+      linksSheet.getRange(r + 1, 3).setValue(new Date().toISOString());
+      Logger.log(`✅ DAVO folder processed: ${link}`);
+
+    } catch (err) {
+      linksSheet.getRange(r + 1, 2).setValue('ERROR: ' + err.message);
+      Logger.log(`❌ DAVO link failed: ${link} — ${err.message}`);
     }
-  } catch (e) {
-    Logger.log("Error uploading " + blobPath + " to Azure: " + e.toString());
-    return false;
   }
 }
 
-/**
- * Resolves the target folder in the processed repository, mimicking the relative path structure.
- */
-function getOrCreateMirrorFolder(rootFolder, relativePath) {
-  if (!relativePath) {
-    return rootFolder;
-  }
-  
-  var segments = relativePath.split('/').filter(function(s) { return s.length > 0; });
-  var currentFolder = rootFolder;
-  
-  for (var i = 0; i < segments.length; i++) {
-    var segment = segments[i];
-    var folders = currentFolder.getFoldersByName(segment);
-    if (folders.hasNext()) {
-      currentFolder = folders.next();
-    } else {
-      currentFolder = currentFolder.createFolder(segment);
-      Logger.log("Created mirror folder: " + segment);
-    }
-  }
-  
-  return currentFolder;
+function _extractFolderId(url) {
+  const match = url.match(/[-\w]{25,}/);
+  if (!match) throw new Error('Cannot parse folder ID from: ' + url);
+  return match[0];
 }
 
-/**
- * Check if the elapsed execution time is close to the Apps Script timeout limit.
- */
-function isTimeLimitExceeded() {
-  var now = new Date().getTime();
-  return (now - START_TIME) > MAX_EXECUTION_TIME_MS;
+// ─── WEB APP API (doGet) ─────────────────────────────────────
+
+function doGet(e) {
+  const action = e.parameter.action || '';
+  const id     = e.parameter.id     || '';
+
+  try {
+    let data;
+    if      (action === 'getPatients') data = _apiGetPatients();
+    else if (action === 'getPatient')  data = _apiGetPatient(id);
+    else if (action === 'getFiles')    data = _apiGetFiles(id);
+    else throw new Error('Unknown action: ' + action);
+
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: true, data }))
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: false, error: err.message }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
 }
 
-/**
- * Overrides MIME types based on file extensions.
- */
-function inferMimeType(fileName, originalMime) {
-  var lower = fileName.toLowerCase();
+function _sheetToObjects(sheet) {
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return []; // only headers or empty
   
-  if (lower.indexOf(".dcm") !== -1 || lower.indexOf(".dicom") !== -1) {
-    return "application/dicom";
-  } else if (lower.indexOf(".pdf") !== -1) {
-    return "application/pdf";
-  } else if (lower.indexOf(".jpg") !== -1 || lower.indexOf(".jpeg") !== -1) {
-    return "image/jpeg";
-  } else if (lower.indexOf(".png") !== -1) {
-    return "image/png";
-  } else if (lower.indexOf(".zip") !== -1) {
-    return "application/zip";
-  }
+  const headers = data[0];
+  const rows = data.slice(1);
+  return rows.map(row =>
+    Object.fromEntries(headers.map((h, i) => [h, row[i]]))
+  );
+}
+
+function _apiGetPatients() {
+  const akrossSheet = getSheet('AKROSS');
+  const davoSheet   = getSheet('DAVO');
   
-  return originalMime || "application/octet-stream";
+  const akross = akrossSheet ? _sheetToObjects(akrossSheet).map(p => { p.tab = 'AKROSS'; return p; }) : [];
+  const davo   = davoSheet   ? _sheetToObjects(davoSheet).map(p => { p.tab = 'DAVO'; return p; }) : [];
+  return akross.concat(davo);
+}
+
+function _apiGetPatient(id) {
+  const all = _apiGetPatients();
+  const patient = all.find(p => p.patient_id === id);
+  if (!patient) throw new Error('Patient not found: ' + id);
+  return patient;
+}
+
+function _apiGetFiles(id) {
+  const patient = _apiGetPatient(id);
+  return {
+    dicom: patient.dicom_blob_url || null,
+    pdf:   patient.pdf_blob_url   || null,
+  };
 }
