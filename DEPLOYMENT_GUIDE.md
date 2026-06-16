@@ -108,13 +108,19 @@ The Apps Script needs to store configuration in **Script Properties**:
    PropertiesService.getScriptProperties().setProperty('AZURE_SAS_TOKEN', 'your_token');
    ```
 
-### Step 4: Initialize the Spreadsheet
+### Step 4: Initialize the Spreadsheet (Generate New Sheet)
 
-1. In the Apps Script console, run the `initSpreadsheet()` function
-2. This creates the "Diacom Ingestion Ledger" spreadsheet with tabs:
-   - **AKROSS**: Patient records from AKROSS folder
-   - **DAVO**: Patient records from DAVO folder
-   - **DAVO_Links**: Folder links to process
+To generate the new Google Sheet that stores your drive links and patient data:
+
+1. **Open Apps Script**: Go to the Apps Script project editor.
+2. **Select Function**: In the toolbar, find the dropdown menu that says `doGet` or `runAkrossIngestion` and change it to **`initSpreadsheet`**.
+3. **Run**: Click the **Run** button (play icon).
+4. **Authorize**: A popup will appear asking for permissions (since we added the `spreadsheets` scope). Click "Review Permissions," select your account, click "Advanced," and then "Go to Dacom Viewer (unsafe)" to authorize.
+5. **Result**: 
+   - The script will create a new file named **"Diacom Ingestion Ledger"** in your Google Drive root.
+   - It will automatically create three tabs: **AKROSS**, **DAVO**, and **DAVO_Links**.
+   - The `SHEET_ID` will be automatically saved in your Script Properties so the web app can find it later.
+6. **Verification**: Go to your [Google Drive](https://drive.google.com) and search for "Diacom Ingestion Ledger" to see the new sheet.
 
 ### Step 5: Run the Next.js Application
 
@@ -128,8 +134,19 @@ The application will now:
 - Fetch patient data from Google Sheets
 - Display patients in the UI
 - Load DICOM/PDF files from Azure Blob Storage
+- Use the new domain `https://tb-engine.allianceindia.org` for production traffic
 
 ---
+
+## New Domain Integration: https://tb-engine.allianceindia.org
+
+To ensure the JWT never expires and traffic is correctly routed through your new domain:
+
+1. **Update DNS**: Ensure `tb-engine.allianceindia.org` points to your Next.js deployment (Vercel, Netlify, or VPS).
+2. **CORS Configuration**: If you are using an external backend on this domain, ensure it allows requests from your frontend origin.
+3. **JWT Persistence**: The application now checks for an existing `jwt_token` in `localStorage`. To make it "never expire," you should either:
+   - Manually set a long-lived token in the browser.
+   - Update `TokenInitializer.tsx` to fetch a fresh token from your new domain's auth endpoint.
 
 ## Troubleshooting
 
