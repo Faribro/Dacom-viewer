@@ -1,0 +1,199 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    height: 100%;
+  }
+
+  body {
+    height: 100%;
+    background-color: #F8FAFC;
+    color: #0F172A;
+    overflow: hidden;
+    -webkit-font-smoothing: subpixel-antialiased;
+    -moz-osx-font-smoothing: auto;
+    font-feature-settings: "cv02", "cv03", "cv04", "kern" 1, "liga" 1;
+  }
+
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(59 130 246);
+    outline-offset: 2px;
+  }
+
+  /* Ultra-premium scrollbar */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(203 213 225 / 0.5);
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(148 163 184 / 0.7);
+  }
+}
+
+@layer components {
+  .font-medical {
+    font-family: var(--font-jetbrains-mono), monospace;
+    letter-spacing: -0.015em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .font-mono {
+    font-family: var(--font-jetbrains-mono), monospace;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* $100M Product Shadow System */
+  .shadow-luxury {
+    box-shadow: 0 2px 15px -3px rgba(0, 0, 0, 0.07), 0 10px 20px -2px rgba(0, 0, 0, 0.04);
+  }
+
+  .shadow-luxury-lg {
+    box-shadow: 0 20px 60px -15px rgba(0, 0, 0, 0.08);
+  }
+
+  /* Premium Glassmorphism */
+  .glass-luxury {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 1);
+  }
+
+  /* Luxury Car Dashboard Gradient */
+  .gradient-dashboard {
+    background: linear-gradient(
+      90deg,
+      rgb(59 130 246) 0%,
+      rgb(251 191 36) 50%,
+      rgb(244 63 94) 100%
+    );
+  }
+
+  /* Score Position Pulse */
+  .score-pulse {
+    animation: score-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes score-pulse {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.7;
+      transform: scale(1.2);
+    }
+  }
+
+  /* Neural Pulse skeleton loader */
+  .neural-pulse {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(
+      90deg,
+      rgb(248 250 252) 0%,
+      rgb(241 245 249) 50%,
+      rgb(248 250 252) 100%
+    );
+    background-size: 200% 100%;
+    animation: neural-pulse 2s ease-in-out infinite;
+  }
+
+  .neural-pulse::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(59, 130, 246, 0.08),
+      transparent
+    );
+    animation: neural-sweep 2s ease-in-out infinite;
+  }
+
+  @keyframes neural-pulse {
+    0%, 100% {
+      background-position: 0% 0%;
+    }
+    50% {
+      background-position: 100% 0%;
+    }
+  }
+
+  @keyframes neural-sweep {
+    0% {
+      left: -100%;
+    }
+    100% {
+      left: 200%;
+    }
+  }
+
+  /* Smooth spring animations */
+  .spring-enter {
+    animation: spring-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  @keyframes spring-in {
+    0% {
+      opacity: 0;
+      transform: scale(0.96) translateY(-4px);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+  }
+
+  /* Institutional Lock Badge */
+  .institutional-lock {
+    animation: institutional-pulse 3s ease-in-out infinite;
+  }
+
+  @keyframes institutional-pulse {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.6;
+    }
+  }
+
+  /* Stale Patient Border Pulse */
+  @keyframes pulse-border {
+    0%, 100% {
+      border-color: rgba(251, 191, 36, 0.5);
+      box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4);
+    }
+    50% {
+      border-color: rgba(251, 191, 36, 0.8);
+      box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.1);
+    }
+  }
+}
