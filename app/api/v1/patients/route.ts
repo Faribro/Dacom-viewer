@@ -2,12 +2,12 @@ import { NextResponse } from "next/server";
 
 import { mapPatient } from "@/utils/patientMapper";
 
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_WEB_APP_URL!;
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_WEB_APP_URL || "";
 
 export async function GET() {
   if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.includes("YOUR_DEPLOYMENT_ID")) {
     console.warn("[SAMADHAAN] APPS_SCRIPT_WEB_APP_URL is not configured. Returning mock case.");
-    return NextResponse.json([]);
+    return NextResponse.json([], { status: 200 });
   }
 
   try {

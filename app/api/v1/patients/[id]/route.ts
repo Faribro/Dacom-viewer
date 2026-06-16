@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { mapPatient } from "@/utils/patientMapper";
 
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_WEB_APP_URL!;
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_WEB_APP_URL || "";
 
 export async function GET(
   _req: Request,

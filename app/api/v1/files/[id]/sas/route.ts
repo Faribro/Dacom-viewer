@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 const AZURE_SAS = process.env.AZURE_SAS_TOKEN || "";
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_WEB_APP_URL!;
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_WEB_APP_URL || "";
 
 function buildSasUrl(blobUrl: string): string {
   if (!blobUrl) return "";
@@ -55,7 +55,7 @@ export async function GET(
       });
     }
 
-    console.info(`[SAMADHAAN] Files loaded for patient ${params.id}:`, files.length);
+    console.info(`[SAMADHAAN] Files loaded for patient ${id}:`, files.length);
     return NextResponse.json(files);
   } catch (err: any) {
     console.error("[SAMADHAAN] Files route handler error:", err);
